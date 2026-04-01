@@ -33,3 +33,12 @@ Notas
 - El informe es un artefacto estático y no requiere servidor.
 - Fecha de actualización: 2026-04-01.
 - Si quieres que extraiga secciones del HTML a Markdown o que añada capturas, dímelo y lo preparo.
+
+**Docker**
+
+- **Build:** `docker build -t graphingcode .`
+- **Run (Docker):** `docker run --rm -p 8080:80 graphingcode`
+- **Run (docker-compose):** `docker-compose up --build -d`
+- Abrir `http://localhost:8080/` (o `http://localhost:8080/static_analysis.html`).
+
+Estos pasos arrancan un contenedor Nginx que sirve el informe estático en el puerto `8080`.
