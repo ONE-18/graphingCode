@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Python Call Graph</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
+<link rel="stylesheet" href="static_analysis.css">
+</head>
+<body>
+<header>
+  <div class="logo">py<span>graph</span>.viz</div>
+  <div style="font-size:11px;color:var(--muted);font-family:var(--font)">grafo de llamadas · python</div>
+  <div class="header-actions">
+    <button onclick="resetGraph()">limpiar</button>
+    <button onclick="fitGraph()">encuadrar</button>
+    <button id="btnRelayout" onclick="relayout()">↺ relayout</button>
+    <button onclick="exportState()">exportar estado</button>
+    <button onclick="document.getElementById('stateInput').click()">importar estado</button>
+    <button onclick="saveLocalState()">guardar local</button>
+    <button onclick="loadLocalState()">cargar local</button>
+    <button class="primary" onclick="document.getElementById('fileInput').click()">+ archivos .py</button>
+  </div>
+</header>
+<div class="main">
+  <div class="sidebar">
+    <div style="padding:13px 15px;border-bottom:1px solid var(--border)">
+      <div class="section-label" style="margin-bottom:8px">Subir archivos</div>
+      <div class="drop-zone" id="dropZone">
+          <input type="file" id="fileInput" accept=".py" multiple onchange="handleFiles(this.files)">
+          <input type="file" id="stateInput" accept=".json" style="display:none" onchange="handleStateFiles(this.files)">
+        <div class="drop-icon">⬡</div>
+        <div class="drop-text"><strong>Arrastra archivos .py</strong>o haz clic para seleccionar</div>
+      </div>
+    </div>
+    <div class="stats-row" id="statsRow" style="display:none">
+      <div class="stat"><span class="stat-n" id="statFiles">0</span><div class="stat-l">archivos</div></div>
+      <div class="stat"><span class="stat-n" id="statFuncs">0</span><div class="stat-l">funciones</div></div>
+      <div class="stat"><span class="stat-n" id="statEdges">0</span><div class="stat-l">llamadas</div></div>
+    </div>
+    <div style="flex:1;overflow:hidden;display:flex;flex-direction:column;">
+      <div style="padding:8px 13px 5px;border-bottom:1px solid var(--border)">
+        <span class="section-label">Archivos cargados</span>
+      </div>
+      <div class="file-list" id="fileList">
+        <div style="font-size:10px;color:var(--muted);padding:8px;text-align:center;font-family:var(--font)">sin archivos</div>
+      </div>
+    </div>
+    <div class="legend">
+      <div class="section-label" style="margin-bottom:7px">Leyenda</div>
+      <div class="legend-item"><div class="legend-line" style="background:#3ecfb0"></div>llamada interna (mismo archivo)</div>
+      <div class="legend-item"><div class="legend-line" style="background:#7c6aff"></div>llamada externa (otro archivo)</div>
+      <div class="legend-item"><div class="legend-line" style="background:#ff7b5a;border-top:2px dashed #ff7b5a;height:0;margin-top:1px"></div>llamada recursiva</div>
+    </div>
+  </div>
+
+  <div class="canvas-area" id="canvasArea">
+    <div class="empty-state" id="emptyState">
+      <div class="empty-icon">◈</div>
+      <div class="empty-text">Sin grafo todavía</div>
+      <div class="empty-sub">sube archivos .py para comenzar</div>
+    </div>
+    <svg id="graph-svg"></svg>
+    <div class="tooltip-box" id="tooltip"></div>
+    <div class="controls-hint">scroll: zoom · drag fondo: mover · drag nodo: reposicionar</div>
+    <div class="toolbar">
+      <button onclick="zoomOut()" style="padding:4px 10px">−</button>
+      <button onclick="zoomIn()"  style="padding:4px 10px">+</button>
+    </div>
+  </div>
+</div>
+
+<script src="static_analysis.js" defer></script>
+</body>
+</html>
