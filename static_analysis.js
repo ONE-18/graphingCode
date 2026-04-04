@@ -601,13 +601,100 @@ function loadLocalState() {
 }
 
 // ─── Files ────────────────────────────────────────────────────────────────────
-function handleFiles(files) {
-  Array.from(files).forEach(file=>{
-    if (!file.name.endsWith('.py')) return;
-    const r=new FileReader();
-    r.onload=e=>{ S.files[file.name]=parsePythonFile(e.target.result,file.name); updateSidebar(); renderGraph(); };
+function isPythonFilePath(path) {
+  return /\.py$/i.test(path || '');
+}
+
+function readFileText(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = e => resolve(e.target.result || '');
+    r.onerror = () => reject(new Error('error leyendo archivo'));
     r.readAsText(file);
   });
+}
+
+async function loadPythonEntries(entries) {
+  if (!entries || !entries.length) return;
+  const pyEntries = entries.filter(e => e && e.file && isPythonFilePath(e.displayName || e.file.name));
+  if (!pyEntries.length) return;
+
+  const parsed = await Promise.all(pyEntries.map(async entry => {
+    const content = await readFileText(entry.file);
+    const filename = entry.displayName || entry.file.webkitRelativePath || entry.file.name;
+    return { filename, parsed: parsePythonFile(content, filename) };
+  }));
+
+  parsed.forEach(({filename, parsed}) => { S.files[filename] = parsed; });
+  updateSidebar();
+  renderGraph();
+}
+
+async function handleFiles(files) {
+  const entries = Array.from(files || []).map(file => ({
+    file,
+    displayName: file.webkitRelativePath || file.name,
+  }));
+  await loadPythonEntries(entries);
+}
+
+function readAllDirectoryEntries(reader) {
+  return new Promise((resolve, reject) => {
+    const all = [];
+    function nextChunk() {
+      reader.readEntries(entries => {
+        if (!entries.length) {
+          resolve(all);
+          return;
+        }
+        all.push(...entries);
+        nextChunk();
+      }, reject);
+    }
+    nextChunk();
+  });
+}
+
+function fileFromEntry(entry) {
+  return new Promise(resolve => {
+    entry.file(resolve, () => resolve(null));
+  });
+}
+
+async function collectPythonEntriesFromFsEntry(entry, prefix = '') {
+  if (!entry) return [];
+
+  const currentPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+  if (entry.isFile) {
+    if (!isPythonFilePath(currentPath)) return [];
+    const file = await fileFromEntry(entry);
+    return file ? [{ file, displayName: currentPath }] : [];
+  }
+
+  if (!entry.isDirectory) return [];
+  const reader = entry.createReader();
+  const children = await readAllDirectoryEntries(reader);
+  const nested = await Promise.all(children.map(child => collectPythonEntriesFromFsEntry(child, currentPath)));
+  return nested.flat();
+}
+
+async function handleDropEvent(ev) {
+  ev.preventDefault();
+
+  const dataTransfer = ev.dataTransfer;
+  const items = Array.from(dataTransfer?.items || []);
+  const supportsEntries = items.some(it => typeof it.webkitGetAsEntry === 'function');
+
+  if (supportsEntries) {
+    const roots = items
+      .map(it => it.webkitGetAsEntry())
+      .filter(Boolean);
+    const nested = await Promise.all(roots.map(root => collectPythonEntriesFromFsEntry(root)));
+    await loadPythonEntries(nested.flat());
+    return;
+  }
+
+  await handleFiles(dataTransfer?.files || []);
 }
 function removeFile(fn) { delete S.files[fn]; updateSidebar(); renderGraph(); }
 function resetGraph()   { S.files={}; updateSidebar(); renderGraph(); }
@@ -636,9 +723,9 @@ function updateSidebar() {
 const dz=document.getElementById('dropZone');
 dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag-over');});
 dz.addEventListener('dragleave',()=>dz.classList.remove('drag-over'));
-dz.addEventListener('drop',e=>{e.preventDefault();dz.classList.remove('drag-over');handleFiles(e.dataTransfer.files);});
+dz.addEventListener('drop',async e=>{dz.classList.remove('drag-over'); await handleDropEvent(e);});
 document.getElementById('canvasArea').addEventListener('dragover',e=>e.preventDefault());
-document.getElementById('canvasArea').addEventListener('drop',e=>{e.preventDefault();handleFiles(e.dataTransfer.files);});
+document.getElementById('canvasArea').addEventListener('drop',async e=>{await handleDropEvent(e);});
 
 // ─── Demo ─────────────────────────────────────────────────────────────────────
 const DEMO=`# demo.py

@@ -20,18 +20,22 @@
     <button onclick="document.getElementById('stateInput').click()">importar estado</button>
     <button onclick="saveLocalState()">guardar local</button>
     <button onclick="loadLocalState()">cargar local</button>
-    <button class="primary" onclick="document.getElementById('fileInput').click()">+ archivos .py</button>
   </div>
 </header>
 <div class="main">
   <div class="sidebar">
     <div style="padding:13px 15px;border-bottom:1px solid var(--border)">
       <div class="section-label" style="margin-bottom:8px">Subir archivos</div>
+      <div class="upload-actions">
+        <button onclick="document.getElementById('folderInput').click()">+ carpeta</button>
+        <button class="primary" onclick="document.getElementById('fileInput').click()">+ archivos .py</button>
+      </div>
       <div class="drop-zone" id="dropZone">
           <input type="file" id="fileInput" accept=".py" multiple onchange="handleFiles(this.files)">
+          <input type="file" id="folderInput" webkitdirectory directory multiple style="display:none" onchange="handleFiles(this.files)">
           <input type="file" id="stateInput" accept=".json" style="display:none" onchange="handleStateFiles(this.files)">
         <div class="drop-icon">⬡</div>
-        <div class="drop-text"><strong>Arrastra archivos .py</strong>o haz clic para seleccionar</div>
+        <div class="drop-text"><strong>Arrastra archivos o carpetas</strong>o haz clic para seleccionar</div>
       </div>
     </div>
     <div class="stats-row" id="statsRow" style="display:none">
