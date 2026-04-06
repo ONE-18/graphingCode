@@ -64,6 +64,11 @@ function parsePythonFile(code, filename) {
     'lower','startswith','endswith','Exception','ValueError','TypeError','KeyError','IndexError',
     'AttributeError','RuntimeError','StopIteration','NotImplementedError','object','exec','eval']);
 
+  // Extend SKIP with common JavaScript globals / builtins so resolver ignores them
+  ['console','window','document','require','module','exports','setTimeout','setInterval',
+   'JSON','Math','Array','String','Object','Number','Boolean','parseInt','parseFloat','Promise']
+    .forEach(n=>SKIP.add(n));
+
   // Collect raw call occurrences (targetName) and defer resolution across files
   const calls=[]; const seen=new Set();
   for (let i=0;i<lines.length;i++) {
@@ -86,6 +91,87 @@ function parsePythonFile(code, filename) {
     }
   }
   return {filename,functions,calls};
+}
+
+// Basic JavaScript parser: finds top-level functions, class methods and simple call sites.
+function parseJSFile(code, filename) {
+  const lines = code.split('\n');
+  const functions = [];
+  const scopeStack = [];
+  const braceStack = [];
+
+  // helper to push function into functions list and scope
+  function addFunction(name, line, isMethod=false, className=null) {
+    const qual = className ? `${className}.${name}` : name;
+    const id = `${filename}::${qual}`;
+    const fn = { id, name:qual, shortName:name, file:filename, line:line, isMethod, className, defIndent:braceStack.length, recursive:false };
+    functions.push(fn);
+    scopeStack.push(fn);
+    braceStack.push({type:'func',fn});
+  }
+
+  // simple patterns for function definitions
+  const reClass = /^\s*class\s+(\w+)/;
+  const reFuncDecl = /^\s*function\s+(\w+)\s*\(/;
+  const reFuncExpr = /^\s*(?:const|let|var)\s+(\w+)\s*=\s*function\s*\(/;
+  const reArrow = /^\s*(?:const|let|var)\s+(\w+)\s*=\s*\(?.*\)?\s*=>\s*\{/;
+  const reMethod = /^\s*(\w+)\s*\(.*\)\s*\{/; // inside class
+
+  for (let i=0;i<lines.length;i++) {
+    const raw = lines[i].replace(/\/\/.*$/,'');
+    if (!raw.trim()) continue;
+
+    // class start
+    let m = raw.match(reClass);
+    if (m) { scopeStack.push({type:'class',name:m[1]}); braceStack.push({type:'class',name:m[1]}); continue; }
+
+    // function declarations
+    m = raw.match(reFuncDecl) || raw.match(reFuncExpr) || raw.match(reArrow);
+    if (m) { addFunction(m[1], i+1, false, scopeStack.length && scopeStack[scopeStack.length-1].type==='class' ? scopeStack[scopeStack.length-1].name : null); continue; }
+
+    // method inside class (naive): if current scope is class and line looks like method
+    if (scopeStack.length && scopeStack[scopeStack.length-1].type==='class') {
+      m = raw.match(reMethod);
+      if (m) { addFunction(m[1], i+1, true, scopeStack[scopeStack.length-1].name); continue; }
+    }
+
+    // braces handling to pop scopes
+    for (let ch of raw) {
+      if (ch==='{') braceStack.push({type:'{'});
+      else if (ch==='}') {
+        const top = braceStack.pop();
+        if (top && top.type==='func') { scopeStack.pop(); }
+        if (top && top.type==='class') { scopeStack.pop(); }
+      }
+    }
+  }
+
+  // Build lookup maps
+  const byQual={}, byShort={};
+  functions.forEach(f=>{ byQual[f.name]=f; (byShort[f.shortName]||(byShort[f.shortName]=[])).push(f); });
+
+  // Second pass: find call sites and attribute them to nearest enclosing function by scanning again
+  const calls=[]; const seen=new Set();
+  const callRe = /\b([\w]+(?:\.[\w]+)*)\s*\(/g;
+  // We'll track a simple stack of enclosing functions by line ranges
+  const funcAtLine = new Array(lines.length).fill(null);
+  functions.forEach(f=>{ funcAtLine[f.line-1]=f; });
+  // propagate forward: assume function body runs until next function at same or lesser brace depth
+  let current=null;
+  for (let i=0;i<lines.length;i++) {
+    if (funcAtLine[i]) current = funcAtLine[i];
+    const raw = lines[i].replace(/\/\/.*$/,''); if (!raw.trim()) continue;
+    let m;
+    while ((m = callRe.exec(raw))!==null) {
+      const rawName = m[1]; const parts = rawName.split('.'); const name = parts[parts.length-1];
+      if (SKIP.has(name) || /^[A-Z]/.test(name)) continue;
+      const owner = current; if (!owner) continue;
+      const k = `${owner.id}→${rawName}`;
+      if (!seen.has(k)) { seen.add(k); calls.push({ source: owner.id, targetName: rawName, line: i+1 }); }
+    }
+  }
+
+  return { filename, functions, calls };
 }
 
 // Resolve raw call targets (from parsePythonFile) into concrete function ids
@@ -608,7 +694,7 @@ function isPythonFilePath(path) {
 function readFileText(file) {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
-    r.onload = e => resolve(e.target.result || '');
+    r.onload = e => resolve(e.target?.result || '');
     r.onerror = () => reject(new Error('error leyendo archivo'));
     r.readAsText(file);
   });
@@ -630,95 +716,6 @@ async function loadPythonEntries(entries) {
   renderGraph();
 }
 
-async function handleFiles(files) {
-  const entries = Array.from(files || []).map(file => ({
-    file,
-    displayName: file.webkitRelativePath || file.name,
-  }));
-  await loadPythonEntries(entries);
-}
-
-function readAllDirectoryEntries(reader) {
-  return new Promise((resolve, reject) => {
-    const all = [];
-    function nextChunk() {
-      reader.readEntries(entries => {
-        if (!entries.length) {
-          resolve(all);
-          return;
-        }
-        all.push(...entries);
-        nextChunk();
-      }, reject);
-    }
-    nextChunk();
-  });
-}
-
-function fileFromEntry(entry) {
-  return new Promise(resolve => {
-    entry.file(resolve, () => resolve(null));
-  });
-}
-
-async function collectPythonEntriesFromFsEntry(entry, prefix = '') {
-  if (!entry) return [];
-
-  const currentPath = prefix ? `${prefix}/${entry.name}` : entry.name;
-  if (entry.isFile) {
-    if (!isPythonFilePath(currentPath)) return [];
-    const file = await fileFromEntry(entry);
-    return file ? [{ file, displayName: currentPath }] : [];
-  }
-
-  if (!entry.isDirectory) return [];
-  const reader = entry.createReader();
-  const children = await readAllDirectoryEntries(reader);
-  const nested = await Promise.all(children.map(child => collectPythonEntriesFromFsEntry(child, currentPath)));
-  return nested.flat();
-}
-
-async function handleDropEvent(ev) {
-  ev.preventDefault();
-
-  const dataTransfer = ev.dataTransfer;
-  const items = Array.from(dataTransfer?.items || []);
-  const supportsEntries = items.some(it => typeof it.webkitGetAsEntry === 'function');
-
-  if (supportsEntries) {
-    const roots = items
-      .map(it => it.webkitGetAsEntry())
-      .filter(Boolean);
-    const nested = await Promise.all(roots.map(root => collectPythonEntriesFromFsEntry(root)));
-    await loadPythonEntries(nested.flat());
-    return;
-  }
-
-  await handleFiles(dataTransfer?.files || []);
-}
-function removeFile(fn) { delete S.files[fn]; updateSidebar(); renderGraph(); }
-function resetGraph()   { S.files={}; updateSidebar(); renderGraph(); }
-
-function updateSidebar() {
-  const names=Object.keys(S.files);
-  const allF=names.reduce((a,n)=>a+S.files[n].functions.length,0);
-  const allE=names.reduce((a,n)=>a+S.files[n].calls.length,0);
-  document.getElementById('statsRow').style.display=names.length?'grid':'none';
-  document.getElementById('statFiles').textContent=names.length;
-  document.getElementById('statFuncs').textContent=allF;
-  document.getElementById('statEdges').textContent=allE;
-  const list=document.getElementById('fileList');
-  if (!names.length) { list.innerHTML='<div style="font-size:10px;color:var(--muted);padding:8px;text-align:center;font-family:var(--font)">sin archivos</div>'; return; }
-  list.innerHTML=names.map((n,i)=>{
-    const col=FILE_COLORS[i%FILE_COLORS.length];
-    return `<div class="file-item">
-      <div class="file-item-left"><div class="file-dot" style="background:${col}"></div><span class="file-name" title="${n}">${n}</span></div>
-      <span class="file-badge">${S.files[n].functions.length}</span>
-      <button class="remove-file" onclick="removeFile('${n}')" title="eliminar">×</button>
-    </div>`;
-  }).join('');
-}
-
 // ─── Drag & drop ──────────────────────────────────────────────────────────────
 const dz=document.getElementById('dropZone');
 dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag-over');});
@@ -728,87 +725,28 @@ document.getElementById('canvasArea').addEventListener('dragover',e=>e.preventDe
 document.getElementById('canvasArea').addEventListener('drop',async e=>{await handleDropEvent(e);});
 
 // ─── Demo ─────────────────────────────────────────────────────────────────────
-const DEMO=`# demo.py
-class Animal:
-    def __init__(self, name):
-        self.name = name
-        self.validate(name)
+async function loadExamplesFromFolder() {
+  const exampleFiles = [
+    { url: 'examples/demo.py', filename: 'demo.py', parser: parsePythonFile },
+    { url: 'examples/helpers.py', filename: 'helpers.py', parser: parsePythonFile },
+    { url: 'examples/extras.py', filename: 'extras.py', parser: parsePythonFile },
+    { url: 'examples/demo.js', filename: 'demo.js', parser: parseJSFile },
+  ];
 
-    def validate(self, name):
-        if not name:
-            raise ValueError("required")
+  try {
+    const loaded = await Promise.all(exampleFiles.map(async ({url, filename, parser}) => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`no se pudo cargar ${url}`);
+      const content = await res.text();
+      return { filename, parsed: parser(content, filename) };
+    }));
 
-    def speak(self):
-        return self.sound()
+    loaded.forEach(({filename, parsed}) => { S.files[filename] = parsed; });
+    updateSidebar();
+    setTimeout(renderGraph,130);
+  } catch (err) {
+    console.error(err);
+  }
+}
 
-    def sound(self):
-        return "..."
-
-class Dog(Animal):
-    def sound(self):
-        return "Woof"
-
-    def fetch(self, item):
-        self.speak()
-        return self.retrieve(item)
-
-    def retrieve(self, item):
-        return item
-
-class Cat(Animal):
-    def sound(self):
-        return "Meow"
-
-    def purr(self):
-        self.speak()
-
-def train(animal, command):
-    result = execute_command(animal, command)
-    log_training(command, result)
-    return result
-
-def execute_command(animal, command):
-    if command == "speak":
-        return animal.speak()
-    return None
-
-def log_training(command, result):
-    format_log(command, result)
-
-def format_log(command, result):
-  return f"{command}: {result}"
-`;
-const HELPERS=`# helpers.py
-def format_log(command, result):
-    return f"{command}: {result}"
-
-def log_training(command, result):
-    format_log(command, result)
-
-def execute_command(animal, command):
-    if command == "speak":
-        return animal.speak()
-    return None
-`;
-
-const EXTRAS=`# extras.py
-from demo import Dog
-import helpers
-
-def make_dog(name):
-    return Dog(name)
-
-def train_all():
-    d = make_dog("Rex")
-    res = helpers.execute_command(d, "speak")
-    helpers.log_training("speak", res)
-    return res
-`;
-
-(function(){
-  S.files['demo.py']=parsePythonFile(DEMO,'demo.py');
-  S.files['helpers.py']=parsePythonFile(HELPERS,'helpers.py');
-  S.files['extras.py']=parsePythonFile(EXTRAS,'extras.py');
-  updateSidebar();
-  setTimeout(renderGraph,130);
-})();
+loadExamplesFromFolder();
