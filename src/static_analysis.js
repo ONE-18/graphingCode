@@ -6,6 +6,18 @@ const PAD_X      = 16;
 const NODE_MIN_W = 60;
 const CLUSTER_PAD = 24;   // padding around nodes inside a cluster box
 
+// Common names to ignore when extracting call targets.
+const SKIP_CALL_NAMES = new Set(['if','for','while','with','return','yield','raise','assert','print','len',
+  'range','str','int','float','list','dict','set','tuple','bool','type','isinstance','issubclass',
+  'hasattr','getattr','setattr','super','property','staticmethod','classmethod','enumerate','zip',
+  'map','filter','sorted','reversed','any','all','min','max','sum','abs','round','open','input',
+  'format','repr','id','hash','dir','vars','iter','next','append','extend','insert','remove','pop',
+  'update','get','keys','values','items','split','join','strip','replace','find','index','upper',
+  'lower','startswith','endswith','Exception','ValueError','TypeError','KeyError','IndexError',
+  'AttributeError','RuntimeError','StopIteration','NotImplementedError','object','exec','eval',
+  'console','window','document','require','module','exports','setTimeout','setInterval',
+  'JSON','Math','Array','String','Object','Number','Boolean','parseInt','parseFloat','Promise']);
+
 // ─── State ────────────────────────────────────────────────────────────────────
 const S = {
   files: {},
@@ -55,20 +67,6 @@ function parsePythonFile(code, filename) {
     return best;
   }
 
-  const SKIP = new Set(['if','for','while','with','return','yield','raise','assert','print','len',
-    'range','str','int','float','list','dict','set','tuple','bool','type','isinstance','issubclass',
-    'hasattr','getattr','setattr','super','property','staticmethod','classmethod','enumerate','zip',
-    'map','filter','sorted','reversed','any','all','min','max','sum','abs','round','open','input',
-    'format','repr','id','hash','dir','vars','iter','next','append','extend','insert','remove','pop',
-    'update','get','keys','values','items','split','join','strip','replace','find','index','upper',
-    'lower','startswith','endswith','Exception','ValueError','TypeError','KeyError','IndexError',
-    'AttributeError','RuntimeError','StopIteration','NotImplementedError','object','exec','eval']);
-
-  // Extend SKIP with common JavaScript globals / builtins so resolver ignores them
-  ['console','window','document','require','module','exports','setTimeout','setInterval',
-   'JSON','Math','Array','String','Object','Number','Boolean','parseInt','parseFloat','Promise']
-    .forEach(n=>SKIP.add(n));
-
   // Collect raw call occurrences (targetName) and defer resolution across files
   const calls=[]; const seen=new Set();
   for (let i=0;i<lines.length;i++) {
@@ -82,7 +80,7 @@ function parsePythonFile(code, filename) {
       const rawName=m[1];
       const parts=rawName.split('.');
       const name=parts[parts.length-1];
-      if (SKIP.has(name)||/^[A-Z]/.test(name)) continue;
+      if (SKIP_CALL_NAMES.has(name)||/^[A-Z]/.test(name)) continue;
       const k=`${owner.id}→${rawName}`;
       if (!seen.has(k)) {
         seen.add(k);
@@ -101,21 +99,23 @@ function parseJSFile(code, filename) {
   const braceStack = [];
 
   // helper to push function into functions list and scope
-  function addFunction(name, line, isMethod=false, className=null) {
+  function addFunction(name, line, isMethod=false, className=null, entersScope=true) {
     const qual = className ? `${className}.${name}` : name;
     const id = `${filename}::${qual}`;
     const fn = { id, name:qual, shortName:name, file:filename, line:line, isMethod, className, defIndent:braceStack.length, recursive:false };
     functions.push(fn);
-    scopeStack.push(fn);
-    braceStack.push({type:'func',fn});
+    if (entersScope) {
+      scopeStack.push(fn);
+      braceStack.push({type:'func',fn});
+    }
   }
 
   // simple patterns for function definitions
   const reClass = /^\s*class\s+(\w+)/;
-  const reFuncDecl = /^\s*function\s+(\w+)\s*\(/;
-  const reFuncExpr = /^\s*(?:const|let|var)\s+(\w+)\s*=\s*function\s*\(/;
-  const reArrow = /^\s*(?:const|let|var)\s+(\w+)\s*=\s*\(?.*\)?\s*=>\s*\{/;
-  const reMethod = /^\s*(\w+)\s*\(.*\)\s*\{/; // inside class
+  const reFuncDecl = /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/;
+  const reFuncExpr = /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?function\s*\(/;
+  const reArrow = /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/;
+  const reMethod = /^\s*(?:async\s+)?(?:static\s+)?([A-Za-z_$][\w$]*)\s*\(.*\)\s*\{/; // inside class
 
   for (let i=0;i<lines.length;i++) {
     const raw = lines[i].replace(/\/\/.*$/,'');
@@ -127,7 +127,11 @@ function parseJSFile(code, filename) {
 
     // function declarations
     m = raw.match(reFuncDecl) || raw.match(reFuncExpr) || raw.match(reArrow);
-    if (m) { addFunction(m[1], i+1, false, scopeStack.length && scopeStack[scopeStack.length-1].type==='class' ? scopeStack[scopeStack.length-1].name : null); continue; }
+    if (m) {
+      const entersScope = /=>\s*\{\s*$/.test(raw) || /function\s*\(/.test(raw);
+      addFunction(m[1], i+1, false, scopeStack.length && scopeStack[scopeStack.length-1].type==='class' ? scopeStack[scopeStack.length-1].name : null, entersScope);
+      continue;
+    }
 
     // method inside class (naive): if current scope is class and line looks like method
     if (scopeStack.length && scopeStack[scopeStack.length-1].type==='class') {
@@ -164,10 +168,65 @@ function parseJSFile(code, filename) {
     let m;
     while ((m = callRe.exec(raw))!==null) {
       const rawName = m[1]; const parts = rawName.split('.'); const name = parts[parts.length-1];
-      if (SKIP.has(name) || /^[A-Z]/.test(name)) continue;
+      if (SKIP_CALL_NAMES.has(name) || /^[A-Z]/.test(name)) continue;
       const owner = current; if (!owner) continue;
       const k = `${owner.id}→${rawName}`;
       if (!seen.has(k)) { seen.add(k); calls.push({ source: owner.id, targetName: rawName, line: i+1 }); }
+    }
+  }
+
+  return { filename, functions, calls };
+}
+
+// Fallback JavaScript parser: intentionally permissive and non-throwing.
+function parseJSFileLoose(code, filename) {
+  const lines = (code || '').split('\n');
+  const functions = [];
+  const calls = [];
+
+  const fnDecl = /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/;
+  const fnExpr = /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\s*\(|(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>)/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i] || '';
+    const m = raw.match(fnDecl) || raw.match(fnExpr);
+    if (!m) continue;
+    const name = m[1];
+    functions.push({
+      id: `${filename}::${name}`,
+      name,
+      shortName: name,
+      file: filename,
+      line: i + 1,
+      isMethod: false,
+      className: null,
+      defIndent: 0,
+      recursive: false,
+    });
+  }
+
+  const sorted = [...functions].sort((a, b) => a.line - b.line);
+  const callRe = /\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\(/g;
+  const seen = new Set();
+  let ownerIdx = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    while (ownerIdx + 1 < sorted.length && sorted[ownerIdx + 1].line <= i + 1) ownerIdx++;
+    const owner = sorted.length ? sorted[ownerIdx] : null;
+    if (!owner || owner.line > i + 1) continue;
+
+    const raw = (lines[i] || '').replace(/\/\/.*$/, '');
+    let m;
+    while ((m = callRe.exec(raw)) !== null) {
+      const rawName = m[1];
+      const parts = rawName.split('.');
+      const name = parts[parts.length - 1];
+      if (SKIP_CALL_NAMES.has(name) || /^[A-Z]/.test(name)) continue;
+      const k = `${owner.id}→${rawName}`;
+      if (!seen.has(k)) {
+        seen.add(k);
+        calls.push({ source: owner.id, targetName: rawName, line: i + 1 });
+      }
     }
   }
 
@@ -415,7 +474,7 @@ function renderGraph() {
   // ── Cluster rects (one per file) ───────────────────────────────────────────
   fileNames.forEach(fn=>{
     const color=fileColors[fn];
-    const grp=clusterLayer.append('g');
+    const grp=clusterLayer.append('g').style('pointer-events','none');
     const rect=grp.append('rect').attr('rx',11)
       .style('fill',color).style('fill-opacity',.04)
       .style('stroke',color).style('stroke-opacity',.2)
@@ -425,27 +484,6 @@ function renderGraph() {
       .style('font-size','10px').style('font-family','Courier New,monospace')
       .style('pointer-events','none').text(fn);
     S.clusterSelMap[fn]={grp,rect,label};
-
-    // Make the whole cluster draggable: dragging the cluster moves all its nodes
-    grp.style('cursor','move').call(d3.drag()
-      .on('start', function(ev){
-        if (!ev.active && S.sim) S.sim.alphaTarget(0.15).restart();
-        // Pin all member nodes at their current positions
-        (S.nodes||[]).filter(n=>n.file===fn).forEach(n=>{ n.fx = n.x; n.fy = n.y; });
-      })
-      .on('drag', function(ev){
-        const dx = ev.dx || 0, dy = ev.dy || 0;
-        (S.nodes||[]).filter(n=>n.file===fn).forEach(n=>{
-          // Ensure fx/fy are set, then offset by the drag delta
-          n.fx = (n.fx!=null ? n.fx : n.x) + dx;
-          n.fy = (n.fy!=null ? n.fy : n.y) + dy;
-        });
-      })
-      .on('end', function(ev){
-        if (!ev.active && S.sim) S.sim.alphaTarget(0);
-        // leave nodes pinned where dropped
-      })
-    );
   });
 
   // ── Edges ──────────────────────────────────────────────────────────────────
@@ -691,6 +729,10 @@ function isPythonFilePath(path) {
   return /\.py$/i.test(path || '');
 }
 
+function isJavaScriptFilePath(path) {
+  return /\.(?:js|mjs|cjs|jsx)$/i.test(path || '');
+}
+
 function readFileText(file) {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -712,6 +754,127 @@ async function loadPythonEntries(entries) {
   }));
 
   parsed.forEach(({filename, parsed}) => { S.files[filename] = parsed; });
+  updateSidebar();
+  renderGraph();
+}
+
+async function loadCodeEntries(entries) {
+  if (!entries || !entries.length) return;
+
+  const codeEntries = entries.filter(e => {
+    if (!e || !e.file) return false;
+    const name = e.displayName || e.file.webkitRelativePath || e.file.name;
+    return isPythonFilePath(name) || isJavaScriptFilePath(name);
+  });
+  if (!codeEntries.length) return;
+
+  const parsed = [];
+  const failedFiles = [];
+  for (const entry of codeEntries) {
+    const filename = entry.displayName || entry.file.webkitRelativePath || entry.file.name;
+    try {
+      const content = await readFileText(entry.file);
+      if (isPythonFilePath(filename)) {
+        parsed.push({ filename, parsed: parsePythonFile(content, filename) });
+      } else {
+        try {
+          parsed.push({ filename, parsed: parseJSFile(content, filename) });
+        } catch (parseErr) {
+          console.warn(`parser JS estricto falló en ${filename}, usando fallback`, parseErr);
+          parsed.push({ filename, parsed: parseJSFileLoose(content, filename) });
+        }
+      }
+    } catch (err) {
+      console.error(`error parseando ${filename}`, err);
+      failedFiles.push(filename);
+    }
+  }
+
+  if (!parsed.length) {
+    alert('no se pudieron analizar los archivos seleccionados');
+    return;
+  }
+
+  if (failedFiles.length) {
+    alert(`no se pudieron leer ${failedFiles.length} archivo(s):\n${failedFiles.slice(0, 5).join('\n')}`);
+  }
+
+  parsed.forEach(({filename, parsed}) => { S.files[filename] = parsed; });
+  updateSidebar();
+  renderGraph();
+}
+
+async function handleFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  const entries = files.map(file => ({
+    file,
+    displayName: file.webkitRelativePath || file.name,
+  }));
+
+  try {
+    await loadCodeEntries(entries);
+  } catch (err) {
+    console.error(err);
+    alert('error cargando archivos');
+  }
+}
+
+async function handleDropEvent(e) {
+  e.preventDefault();
+  const dropped = Array.from(e.dataTransfer?.files || []);
+  if (!dropped.length) return;
+  await handleFiles(dropped);
+}
+
+function updateSidebar() {
+  const files = Object.keys(S.files);
+  const fileList = document.getElementById('fileList');
+  const statsRow = document.getElementById('statsRow');
+  const statFiles = document.getElementById('statFiles');
+  const statFuncs = document.getElementById('statFuncs');
+  const statEdges = document.getElementById('statEdges');
+
+  if (!fileList || !statsRow || !statFiles || !statFuncs || !statEdges) return;
+
+  if (!files.length) {
+    statsRow.style.display = 'none';
+    fileList.innerHTML = '<div style="font-size:10px;color:var(--muted);padding:8px;text-align:center;font-family:var(--font)">sin archivos</div>';
+    return;
+  }
+
+  statsRow.style.display = 'grid';
+
+  let totalFunctions = 0;
+  files.forEach(fn => {
+    totalFunctions += (S.files[fn]?.functions || []).length;
+  });
+  const totalEdges = resolveCalls(S.files).length;
+
+  statFiles.textContent = String(files.length);
+  statFuncs.textContent = String(totalFunctions);
+  statEdges.textContent = String(totalEdges);
+
+  const rows = files.map((fn, i) => {
+    const color = FILE_COLORS[i % FILE_COLORS.length];
+    const fnCount = (S.files[fn]?.functions || []).length;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:7px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text);font-family:var(--font)">
+      <span style="width:8px;height:8px;border-radius:999px;background:${color};opacity:.9;flex:0 0 auto"></span>
+      <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${fn}</span>
+      <span style="opacity:.65">${fnCount}</span>
+    </div>`;
+  });
+  fileList.innerHTML = rows.join('');
+}
+
+function resetGraph() {
+  if (S.sim) { S.sim.stop(); S.sim = null; }
+  S.files = {};
+  S.nodes = [];
+  S.edges = [];
+  S.recursiveCalls = [];
+  S.savedPositions = null;
+  S.savedZoom = null;
   updateSidebar();
   renderGraph();
 }
