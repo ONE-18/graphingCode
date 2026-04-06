@@ -855,16 +855,40 @@ function updateSidebar() {
   statFuncs.textContent = String(totalFunctions);
   statEdges.textContent = String(totalEdges);
 
+  const escapeHtml = (txt) => String(txt)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
   const rows = files.map((fn, i) => {
     const color = FILE_COLORS[i % FILE_COLORS.length];
     const fnCount = (S.files[fn]?.functions || []).length;
-    return `<div style="display:flex;align-items:center;gap:8px;padding:7px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text);font-family:var(--font)">
-      <span style="width:8px;height:8px;border-radius:999px;background:${color};opacity:.9;flex:0 0 auto"></span>
-      <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${fn}</span>
-      <span style="opacity:.65">${fnCount}</span>
+    const encodedName = encodeURIComponent(fn);
+    const safeName = escapeHtml(fn);
+    return `<div class="file-item">
+      <div class="file-item-left" title="${safeName}">
+        <span class="file-dot" style="background:${color};opacity:.9"></span>
+        <span class="file-name">${safeName}</span>
+      </div>
+      <span class="file-badge">${fnCount}</span>
+      <button class="remove-file" data-file="${encodedName}" title="Eliminar del gráfico" aria-label="Eliminar ${safeName}">×</button>
     </div>`;
   });
   fileList.innerHTML = rows.join('');
+
+  fileList.querySelectorAll('.remove-file').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const encodedName = btn.getAttribute('data-file') || '';
+      const filename = decodeURIComponent(encodedName);
+      if (!filename || !S.files[filename]) return;
+      delete S.files[filename];
+      updateSidebar();
+      renderGraph();
+    });
+  });
 }
 
 function resetGraph() {
