@@ -936,19 +936,70 @@ document.getElementById('canvasArea').addEventListener('drop',async e=>{await ha
 
 // ─── Demo ─────────────────────────────────────────────────────────────────────
 async function loadExamplesFromFolder() {
-  const exampleFiles = [
-    { url: 'examples/demo.py', filename: 'demo.py', parser: parsePythonFile },
-    { url: 'examples/helpers.py', filename: 'helpers.py', parser: parsePythonFile },
-    { url: 'examples/extras.py', filename: 'extras.py', parser: parsePythonFile },
-    { url: 'examples/demo.js', filename: 'demo.js', parser: parseJSFile },
-  ];
+  async function getExamplePaths() {
+    const fallback = ['examples/demo.py', 'examples/helpers.py', 'examples/extras.py', 'examples/demo.js'];
+
+    // Preferred source: explicit manifest file if present.
+    try {
+      const manifestRes = await fetch('examples/manifest.json', { cache: 'no-store' });
+      if (manifestRes.ok) {
+        const manifest = await manifestRes.json();
+        if (Array.isArray(manifest)) {
+          const listed = manifest
+            .map(p => String(p || '').trim())
+            .filter(p => p && (isPythonFilePath(p) || isJavaScriptFilePath(p)))
+            .map(p => p.startsWith('examples/') ? p : `examples/${p}`);
+          if (listed.length) return listed;
+        }
+      }
+    } catch (err) {
+      // Keep going with auto-discovery/fallback.
+    }
+
+    // Secondary source: parse directory listing when server exposes it.
+    try {
+      const dirRes = await fetch('examples/', { cache: 'no-store' });
+      if (dirRes.ok) {
+        const html = await dirRes.text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const hrefs = Array.from(doc.querySelectorAll('a[href]'))
+          .map(a => a.getAttribute('href') || '')
+          .filter(Boolean)
+          .map(h => h.split('#')[0].split('?')[0]);
+
+        const discovered = [];
+        hrefs.forEach(href => {
+          if (href === '../' || href.endsWith('/')) return;
+          const clean = href.replace(/^\.\//, '').replace(/^\//, '');
+          if (!isPythonFilePath(clean) && !isJavaScriptFilePath(clean)) return;
+          discovered.push(clean.startsWith('examples/') ? clean : `examples/${clean}`);
+        });
+
+        const unique = [...new Set(discovered)];
+        if (unique.length) return unique;
+      }
+    } catch (err) {
+      // Fall back to defaults when directory listing is unavailable.
+    }
+
+    return fallback;
+  }
 
   try {
-    const loaded = await Promise.all(exampleFiles.map(async ({url, filename, parser}) => {
-      const res = await fetch(url);
+    const examplePaths = await getExamplePaths();
+    const loaded = await Promise.all(examplePaths.map(async (url) => {
+      const res = await fetch(url, { cache: 'no-store' });
       if (!res.ok) throw new Error(`no se pudo cargar ${url}`);
       const content = await res.text();
-      return { filename, parsed: parser(content, filename) };
+      const filename = url.replace(/^examples\//, '');
+      if (isPythonFilePath(filename)) {
+        return { filename, parsed: parsePythonFile(content, filename) };
+      }
+      try {
+        return { filename, parsed: parseJSFile(content, filename) };
+      } catch (parseErr) {
+        return { filename, parsed: parseJSFileLoose(content, filename) };
+      }
     }));
 
     loaded.forEach(({filename, parsed}) => { S.files[filename] = parsed; });
