@@ -474,7 +474,7 @@ function renderGraph() {
   // ── Cluster rects (one per file) ───────────────────────────────────────────
   fileNames.forEach(fn=>{
     const color=fileColors[fn];
-    const grp=clusterLayer.append('g').style('pointer-events','none');
+    const grp=clusterLayer.append('g').style('cursor','grab');
     const rect=grp.append('rect').attr('rx',11)
       .style('fill',color).style('fill-opacity',.04)
       .style('stroke',color).style('stroke-opacity',.2)
@@ -483,6 +483,29 @@ function renderGraph() {
       .style('fill',color).style('opacity',.5)
       .style('font-size','10px').style('font-family','Courier New,monospace')
       .style('pointer-events','none').text(fn);
+    
+    // Drag handler for cluster: move all nodes in this file
+    grp.call(d3.drag()
+      .on('start',function(ev){
+        grp.style('cursor','grabbing');
+      })
+      .on('drag',function(ev){
+        const clusterMembers = nodes.filter(n => n.file === fn);
+        const dx = ev.dx, dy = ev.dy;
+        clusterMembers.forEach(n => {
+          n.x += dx;
+          n.y += dy;
+          n.fx = n.x;
+          n.fy = n.y;
+        });
+        if (S.sim) S.sim.alpha(0.3).restart();
+        onTick();
+      })
+      .on('end',function(ev){
+        grp.style('cursor','grab');
+      })
+    );
+    
     S.clusterSelMap[fn]={grp,rect,label};
   });
 
