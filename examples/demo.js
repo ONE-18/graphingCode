@@ -5,8 +5,8 @@ class Animal {
   sound() { return '...'; }
 }
 
-class Dog extends Animal {
-  sound() { return 'Woof'; }
+class Rat extends Animal {
+  sound() { return '*rat noise*'; }
   fetch(item) { this.speak(); return this.retrieve(item); }
   retrieve(item) { return item; }
 }
